@@ -66,7 +66,12 @@ elif git -C "$REPO_ROOT" rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; 
   die "Tag '$VERSION' exists but is not on HEAD. Move it to HEAD or check out the tagged commit."
 else
   log "Creating ephemeral annotated tag '$VERSION' on HEAD (auto-removed on exit)."
-  git -C "$REPO_ROOT" tag -a "$VERSION" -m "AEGIS build $VERSION"
+  # Annotated tag needs a tagger identity; supply one inline so this works on CI
+  # runners with no configured git user (does not mutate global/local config).
+  git -C "$REPO_ROOT" \
+    -c user.name="${GIT_TAGGER_NAME:-AEGIS Build}" \
+    -c user.email="${GIT_TAGGER_EMAIL:-aegis-build@dragonflyuas.local}" \
+    tag -a "$VERSION" -m "AEGIS build $VERSION"
   CREATED_TAG="$VERSION"
 fi
 
