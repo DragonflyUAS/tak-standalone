@@ -23,6 +23,12 @@ gradle task `buildFullDocker`(`src/takserver-package/build.gradle:386`,底層是
 
 - [ ] 撰寫 `AEGIS/scripts/build.sh`:
   - [ ] 若不是 x86-64,或 `java -version` 不是 17,就 fail fast。
+  - [ ] **版本帶入(關鍵):** 本 repo 沒有 git tag,gradle 由
+        `git describe` 推導版本(`src/build.gradle:32`),會推不出
+        `5.7-RELEASE-14`。`build.sh` 讀 `AEGIS/VERSION` 並顯式帶入——做法待
+        Phase 1 確認:① 在 build 前對 HEAD 打一個 local tag `$(cat AEGIS/VERSION)`
+        (build 完可選擇刪掉),或 ② 用 `-P` 覆寫 `takversion`/`takrelease` ext
+        變數。優先用 local tag(對 gradle 既有邏輯侵入最小)。
   - [ ] 執行 `(cd src && ./gradlew clean buildFullDocker)`。
   - [ ] 解析產出的 zip(glob:
         `src/takserver-package/build/distributions/takserver-docker-full-*.zip`),
