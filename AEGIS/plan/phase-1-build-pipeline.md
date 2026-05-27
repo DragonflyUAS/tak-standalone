@@ -3,6 +3,14 @@
 **目標:** 從乾淨的 checkout,一行指令 build 出已驗證的 TAK Server **單一
 self-contained image**(基於 gradle `full` flavor),供 compose 與 k8s 共用。
 
+> **實作狀態(2026-05-27):** `AEGIS/scripts/build.sh` 與 GitHub Actions
+> workflow `.github/workflows/aegis-build.yml` 已完成。本機是 arm64 無法實跑
+> gradle build——實際 build 在 CI(x86-64 runner)進行,push 到
+> **GAR `asia-east1-docker.pkg.dev/aegis-product/services/aegis-takserver`**
+> (沿用 aegis frontend 的 GAR + WIF pattern)。本機已驗證:`bash -n` 語法、
+> VERSION 讀取、x86-64 arch guard 正確擋下。**待 CI 首跑驗證 gradle+docker
+> 全流程**(可能需補 build 工具鏈,如 node;首跑會揭露)。
+
 ## 背景
 
 gradle task `buildFullDocker`(`src/takserver-package/build.gradle:386`,底層是
@@ -45,10 +53,33 @@ gradle task `buildFullDocker`(`src/takserver-package/build.gradle:386`,底層是
   - [ ] image build 成功後 `docker image inspect` 確認存在;輸出 image digest。
 - [ ] 在 `AEGIS/overlay/README.md` 記錄 build 流程(前置需求、首跑約 10–15 分鐘)。
 
+## CI(GitHub Actions → GAR)
+
+沿用 aegis frontend(`frontend/.github/workflows/docker.yml`)的 **GAR + Workload
+Identity Federation** pattern:
+
+- `.github/workflows/aegis-build.yml`:`ubuntu-latest`(x86-64)→ checkout
+  (`fetch-depth: 0`)→ JDK 17 → **WIF 認證**(`google-github-actions/auth@v2`)→
+  `gcloud auth configure-docker` → 跑 `build.sh`(`REGISTRY=<GAR_LOCATION>/
+  <project>/<repo>`)→ `docker push` `:<ver>`、`:<ver>-<ts>-<sha>`(traceable)、
+  `:latest`。
+- GAR 目標:`asia-east1-docker.pkg.dev/aegis-product/services/aegis-takserver`。
+- **與 frontend 的刻意差異**:TAK 僅 amd64——拿掉 multi-arch matrix 與 manifest
+  merge;image 由 `build.sh`(gradle 產 Dockerfile)build,不用
+  `docker/build-push-action`。
+- 觸發:push 到 `AEGIS`(限 `AEGIS/**`、`src/**`、workflow 自身)或
+  `workflow_dispatch`。
+- ⚠️ **WIF 授權前置**:WIF provider 的 attribute condition / SA 的 IAM binding
+  必須允許 `DragonflyUAS/Server` 這個 repo 來 impersonate
+  `github-actions-pusher@aegis-product`(frontend repo 已授權,但本 repo 可能要
+  GCP admin 補上)。否則 auth step 會失敗。
+
 ## 產出物
 
-- `AEGIS/scripts/build.sh`(冪等、可重複執行)。
-- 本機 docker image `takserver-aegis:<ver>` + `:latest`。
+- `AEGIS/scripts/build.sh`(冪等、可重複執行;env 參數化 `IMAGE_NAME`/`REGISTRY`)。
+- `.github/workflows/aegis-build.yml`(CI build + push GAR,WIF 認證)。
+- docker image `aegis-takserver:<ver>` + `:latest`(本機 `takserver-aegis:<ver>`)/
+  GAR `.../services/aegis-takserver:<ver>`(CI)。
 - staging 產物 + zip 在 `AEGIS/dist/`。
 
 ## 結束 milestone(M1)

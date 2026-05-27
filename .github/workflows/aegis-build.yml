@@ -1,0 +1,79 @@
+name: AEGIS — build & push TAK image to GAR
+
+# Builds the single self-contained TAK Server image (gradle "full" flavor) on an
+# x86-64 runner and pushes it to Google Artifact Registry, following the same GAR
+# + Workload Identity Federation pattern as the aegis frontend pipeline
+# (.github/workflows/docker.yml in the frontend repo).
+#
+# DELIBERATE DIFFERENCE vs the frontend pipeline: TAK Server is x86-64 ONLY, so
+# there is NO arm64 build, NO matrix, and NO multi-arch manifest merge — just a
+# single linux/amd64 image. The docker image itself is produced by AEGIS/scripts/
+# build.sh (gradle generates the Dockerfile + tak/ payload), not from a static
+# Dockerfile, so we don't use docker/build-push-action here.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [AEGIS]
+    paths:
+      - 'AEGIS/**'
+      - 'src/**'
+      - '.github/workflows/aegis-build.yml'
+
+env:
+  GAR_LOCATION: asia-east1-docker.pkg.dev
+  GCP_PROJECT_ID: aegis-product
+  GAR_REPOSITORY: services
+  IMAGE_NAME: aegis-takserver
+
+jobs:
+  build:
+    runs-on: ubuntu-latest        # x86-64 (TAK Server is amd64-only)
+    permissions:
+      contents: read
+      id-token: write             # required for Workload Identity Federation
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # full history so Grgit/`git describe` works; build.sh tags HEAD itself
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Authenticate to Google Cloud (WIF)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: 'projects/79427579221/locations/global/workloadIdentityPools/github-pool/providers/github-provider'
+          service_account: 'github-actions-pusher@aegis-product.iam.gserviceaccount.com'
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.GAR_LOCATION }} --quiet
+
+      - name: Build single-image (gradle full flavor → docker image)
+        env:
+          REGISTRY: ${{ env.GAR_LOCATION }}/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+        run: |
+          chmod +x AEGIS/scripts/build.sh
+          AEGIS/scripts/build.sh
+
+      - name: Push to GAR
+        env:
+          IMAGE: ${{ env.GAR_LOCATION }}/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < AEGIS/VERSION)"
+          BUILD_TAG="${VERSION}-$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
+          docker tag "$IMAGE:$VERSION" "$IMAGE:$BUILD_TAG"
+          docker push "$IMAGE:$VERSION"
+          docker push "$IMAGE:$BUILD_TAG"
+          docker push "$IMAGE:latest"
+          echo "Pushed $IMAGE tags: $VERSION , $BUILD_TAG , latest"
