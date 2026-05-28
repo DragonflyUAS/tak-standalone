@@ -51,6 +51,71 @@ log 在 `/opt/tak/data/logs`。把 **`/opt/tak/data`** 對到持久儲存:
   PVC,否則 pod 重啟會重產 CA、把已 enroll 的 client 全部失效。
 - 另一選項:預先產好憑證,k8s 掛成 **Secret**(read-only,GitOps 友善)。
 
+## 部署(docker-compose)
+
+```bash
+cd AEGIS/overlay
+cp .env.example .env          # 編輯,填入所有 REQUIRED(密碼等)
+docker compose up -d          # 首次:pull image → 產憑證 → init schema → 註冊 admin
+```
+
+首次啟動約 1–2 分鐘。看 log 等到就緒:
+
+```bash
+docker compose logs -f takserver
+# 看到 "ADMIN USER ADDED"(console)= messaging 層 + admin 就緒
+# API(8443)完全就緒的標記在 file log(不在 console):
+grep "Started TAK Server api Microservice" takdata/logs/takserver-api.log
+```
+
+取 admin 憑證(可能是 root-owned,必要時用 sudo):
+
+```bash
+cp ./takdata/certs/files/admin.p12 ~/admin.p12   # 檔名為 ${ADMIN_CERT_NAME}.p12
+```
+
+### 常用 ops 指令
+
+```bash
+docker compose ps                       # 容器狀態(takdb 應 healthy)
+docker compose logs -f takserver        # 即時 log
+docker compose logs takserver | grep -i error
+docker compose restart takserver        # 改 .env 後重啟
+docker compose down                     # 停止(保留 DB volume 與 ./takdata)
+docker compose down -v                  # 停止並清空 DB volume(reset)
+```
+
+### Troubleshooting
+
+- **`password authentication failed for user "martiuser"`(takserver exit 2、一直重啟)**:
+  Postgres 只在資料 volume **首次初始化**時設密碼。改了 `POSTGRES_PASSWORD` 後,
+  既有的 `takserver_db_data` volume 仍是舊密碼(`down` 與 `rm -rf ./takdata` 都不會
+  動到 named volume)。修法:`docker compose down -v` 清掉 DB volume 再 `up`。
+- **`openssl req: Use -help for summary`(產 CA 時)**:密碼含空格——`makeRootCa.sh`
+  裸用 `pass:$VAR`。把 `.env` 的密碼改成無空格。
+- **`ln: failed to create symbolic link '/opt/tak/logs/logs'`**:image 內
+  `/opt/tak/logs` 是真實目錄,stock 的 `ln -s .../data/logs /opt/tak/logs` 會 nest。
+  **已在 image build 時 patch 修掉**(見 `AEGIS/scripts/build.sh`);若拉到舊 image
+  仍會中,`docker compose pull` 取最新版即可。
+- **一直重啟、log 出現 `IgniteException: Failed to find deployed service:
+  distributed-user-file-manager`**:stock entrypoint 固定 ~60s 後跑 `certmod -A`,
+  server 沒起完就失敗、`set -e` 殺掉容器。**已在 image build 時 patch 成
+  retry-until-ready**。若 server 始終起不來,多半是**記憶體不足**——Docker 給 8GB+。
+- **web UI / API 請求卡住回 0 bytes、log 有 `UnknownHostException: tak-database`
+  或 `HikariPool-1 - Connection is not available ... (total=0)`**:這是 full flavor
+  的設定 bug——image 內 `/opt/tak/CoreConfig.xml` 是 `tak-database` + **空密碼**,
+  而 `coreConfigEnvHelper.py` 只把 env 注入到 `/opt/tak/data/CoreConfig.xml`,JVM
+  卻從 CWD 載入前者。**已在 image build 時 patch 修掉**:helper 跑完後把
+  `data/CoreConfig.xml` 覆蓋到 `/opt/tak/CoreConfig.xml`,讓 JVM 載到正確的
+  `takdb` + 密碼。**修好後一切走 `takdb`,不需要任何 `tak-database` 別名。**
+
+### 改用外部 / managed DB
+
+把 `docker-compose.yml` 的 `takdb` service 移除,並讓你的 DB 從 takserver 容器以
+`takdb:5432` 可達(`.env` 的 `POSTGRES_URL` 已指向那裡)——例如用外部 DNS 或在
+compose 加一個 `extra_hosts: ["takdb:<db-ip>"]`。DB 需先建好且 PostGIS extension
+已 enable。
+
 ## 存取(mTLS)
 
 web UI(8443)與 ATAK(8089)都是 **mTLS-only**:需要 client 憑證。部署後取得

@@ -5,6 +5,15 @@
 `compose up` → mTLS 登入 web UI」的 turnkey 體驗。這就是原本要的「像官方
 tak.gov 那樣的 docker-compose 包」。
 
+> **實作狀態(2026-05-28):✅ 已端到端驗證(arm64 模擬)。**
+> `docker compose up` → DB 連線 → admin 註冊 → mTLS → `GET /Marti/api/version`
+> 回 `5.7-RELEASE-14-AEGIS`、`/Marti/api/clientEndPoints`=200。
+> compose **純 `image + env + volume`**(無 runtime wrapper)——三個 stock-flavor
+> workaround(logs 冪等、certmod retry、CoreConfig 覆蓋)已**移入 image build 時的
+> patch**(見 `AEGIS/scripts/build.sh`),deploy 端不需處理。
+> 另需:Docker RAM 8GB+;改 `POSTGRES_PASSWORD` 後要 `down -v`;改 image 後要
+> `docker compose pull`。arm64 模擬下 API 啟動約 80s;真正效能仍以 amd64 為準。
+
 ## 背景
 
 full flavor 自帶一份 `docker/docker-compose.yml`(單一 `takserver` 服務
@@ -50,3 +59,9 @@ schema 初始化,operator 能用 `admin.p12` 透過 mTLS 登入 web UI。
 - **mTLS 登入:** `admin.p12` 要匯入瀏覽器**個人**存放區、**重啟瀏覽器**、用
   `localhost` 不要用容器 IP。
 - 這一步驗證的是 image 本身可用;k8s 部署在 Phase 5,共用同一 image。
+- **stock entrypoint 非可重複執行**:image 內 `/opt/tak/logs` 是真實目錄,
+  entrypoint 的 `ln -s .../data/logs /opt/tak/logs` 會 nest 成 `/opt/tak/logs/logs`,
+  容器重啟再跑一次 entrypoint 時 `ln` 撞 `File exists` → `set -e` exit → 失敗迴圈。
+  compose 已用 `entrypoint` wrapper(`mkdir -p data/logs && rm -rf /opt/tak/logs`
+  後再 exec stock entrypoint)修掉。k8s(Phase 5)也要套同樣的 wrapper(initContainer
+  或 command override)。卡住時先 `docker compose down` 取得全新容器。

@@ -33,6 +33,14 @@ k8s 裡跑單一 pod,接外部 DB。`src/takserver-cluster/deployments/helm/temp
 - [ ] `AEGIS/k8s/service.yaml` — 暴露 8089(ATAK)、8443(web UI)、9000/9001
       (federation);依平台需求選 ClusterIP / LoadBalancer / Ingress(8443 是
       mTLS,Ingress 要 TLS passthrough,不能在 LB 終結 TLS)。
+- [ ] **DB Service 命名 `takdb`(只要一個)** 指向外部 DB(ExternalName 或
+      headless+Endpoints)。⚠️ 但必須搭配下面的 CoreConfig 修正,否則 JVM 會去連
+      image 內建的 `tak-database` + 空密碼(見地雷)。
+- [ ] **CoreConfig 修正(compose 實測,k8s 也必須做)**:TAK JVM 從 CWD 載入
+      `/opt/tak/CoreConfig.xml`,但 image 那份是 `tak-database` + 空密碼;
+      `coreConfigEnvHelper.py` 只修 `data/CoreConfig.xml`。pod 的 command wrapper
+      要在 helper 後把 `data/CoreConfig.xml` 覆蓋到 `/opt/tak/CoreConfig.xml`
+      (同 compose 的 wrapper),JVM 才會用 `takdb` + 正確密碼。
 - [ ] `AEGIS/k8s/README.md` — apply 順序、外部 DB 前置(PostGIS extension)、
       取 `admin.p12`、mTLS 存取。
 
@@ -56,3 +64,8 @@ k8s 裡跑單一 pod,接外部 DB。`src/takserver-cluster/deployments/helm/temp
   重啟會重產、把已 enroll 的 client 全部失效。
 - **外部 DB 連線** — Secret 內 DB 密碼;確認 NetworkPolicy / SG 允許 pod 連到 DB。
 - **時序** — 用 probe 與 Job 排序,別依賴 entrypoint 的 `sleep`。
+- **三個 stock-flavor 修正已 baked 進 image**(`AEGIS/scripts/build.sh` 在 docker
+  build 前 patch):logs symlink 冪等、certmod retry-until-ready、CoreConfig 覆蓋
+  (修空密碼/錯 host)。**pod 不需要 command wrapper**——pure `image + env + volume`
+  manifests 即可,GitOps 友善。⚠️ TAK upstream 升版時要重驗 patch(Phase 6
+  upstream-sync 已列為回歸點)。

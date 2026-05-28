@@ -3,13 +3,14 @@
 **目標:** 從乾淨的 checkout,一行指令 build 出已驗證的 TAK Server **單一
 self-contained image**(基於 gradle `full` flavor),供 compose 與 k8s 共用。
 
-> **實作狀態(2026-05-27):** `AEGIS/scripts/build.sh` 與 GitHub Actions
-> workflow `.github/workflows/aegis-build.yml` 已完成。本機是 arm64 無法實跑
-> gradle build——實際 build 在 CI(x86-64 runner)進行,push 到
-> **GAR `asia-east1-docker.pkg.dev/aegis-product/services/aegis-takserver`**
-> (沿用 aegis frontend 的 GAR + WIF pattern)。本機已驗證:`bash -n` 語法、
-> VERSION 讀取、x86-64 arch guard 正確擋下。**待 CI 首跑驗證 gradle+docker
-> 全流程**(可能需補 build 工具鏈,如 node;首跑會揭露)。
+> **實作狀態(2026-05-28):** `AEGIS/scripts/build.sh` 與 GitHub Actions
+> workflow `.github/workflows/aegis-build.yml` 已完成,並**於 build 時對
+> `docker_entrypoint.sh` 套 3 個 patch**(logs symlink 冪等、certmod retry、
+> CoreConfig 覆蓋——詳見 build.sh)。產出的 image 是「self-correct」的,部署端
+> (compose/k8s)不再需要 runtime wrapper,純 `image + env + volume`。
+> push 到 GAR `asia-east1-docker.pkg.dev/aegis-product/services/aegis-takserver`
+> (沿用 aegis frontend 的 GAR + WIF pattern)。本機(arm64)無法跑 gradle,
+> 實際 build 在 CI(ubuntu-latest)進行。
 
 ## 背景
 

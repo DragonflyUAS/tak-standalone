@@ -1,0 +1,58 @@
+# AEGIS TAK Server — 本機 docker-compose 部署
+#
+# 單一 self-contained 的 TAK Server image(gradle "full" flavor)+ 一個 PostGIS
+# 資料庫。DB 服務命名為 `takdb`,讓 stock entrypoint 的 schema 初始化(takdb:5432)
+# 與 POSTGRES_URL 對齊,完全不需要改 image。
+#
+# 改用 managed/外部 DB:移除 `takdb` 服務,並讓你的 DB 能從 takserver 容器以
+# `takdb:5432` 連到(.env 的 POSTGRES_URL 已指向那裡)。
+#
+# 用法:cp .env.example .env  &&  編輯 .env  &&  docker compose up -d
+#
+# 注意:TAK image 僅限 x86-64(`platform: linux/amd64`)。arm64 主機會走模擬
+# (很慢);真正驗證請在 amd64 主機或平台 k8s 上。
+
+services:
+  takdb:
+    image: postgis/postgis:15-3.3
+    env_file: [.env]
+    volumes:
+      - takserver_db_data:/var/lib/postgresql/data
+    networks: [taknet]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  takserver:
+    image: ${TAKSERVER_IMAGE:-asia-east1-docker.pkg.dev/aegis-product/services/aegis-takserver:5.7-RELEASE-14}
+    platform: linux/amd64
+    env_file: [.env]
+    # image 已在 build 時 patch 過(見 AEGIS/scripts/build.sh):logs symlink 冪等、
+    # certmod retry、CoreConfig 覆蓋。所以這裡不需要 entrypoint wrapper,直接用
+    # image 內建的 ENTRYPOINT。
+    depends_on:
+      takdb:
+        condition: service_healthy
+    volumes:
+      # 持久化產生的憑證 + log(跨重啟保留);首次啟動後從
+      # ./takdata/certs/files/<ADMIN_CERT_NAME>.p12 取得 admin.p12
+      - ./takdata:/opt/tak/data
+    ports:
+      # https://localhost:8443
+      - "8089:8089"   # ATAK / iTAK TLS
+      - "8443:8443"   # web UI(mTLS)
+      - "8444:8444"   # federation https
+      - "8446:8446"   # 憑證 enrollment
+      - "9000:9000"   # federation
+      - "9001:9001"   # federation
+    networks: [taknet]
+    restart: unless-stopped
+
+networks:
+  taknet:
+
+volumes:
+  takserver_db_data:

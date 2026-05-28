@@ -109,6 +109,40 @@ done
 PKG_VER="$(tr -d '[:space:]' < "$PKG_DIR/tak/version.txt" 2>/dev/null || echo unknown)"
 log "payload version.txt: $PKG_VER"
 
+# --- build-time patches to docker_entrypoint.sh ----------------------------
+# Bake the deployment fixes into the image so compose/k8s deploys can be pure
+# `image + env + volume` (no runtime wrapper). Each patch is guarded so the
+# script is idempotent and reviewable. Re-validate these on each TAK upstream
+# version bump (Phase 6 upstream-sync).
+ENT="$PKG_DIR/tak/docker_entrypoint.sh"
+log "patching $ENT (3 fixes)"
+
+# (1) logs symlink idempotency — the image ships /opt/tak/logs as a real dir,
+#     so `ln -s .../data/logs /opt/tak/logs` nests as /opt/tak/logs/logs and
+#     collides under `set -e` on re-runs. Pre-create data/logs and clear the
+#     stale real dir before the entrypoint's own `ln -s` runs.
+if ! grep -qF 'rm -rf "/opt/tak/logs"' "$ENT"; then
+  sed -i '/^set -e$/a\
+mkdir -p "/opt/tak/data/logs"\
+rm -rf "/opt/tak/logs"' "$ENT"
+fi
+
+# (2) admin registration retry — stock runs `certmod -A` once at a fixed ~60s
+#     under `set -e`; on slow nodes the Ignite service isn't ready and the
+#     container exits → crash loop. Rewrite into retry-until-ready.
+sed -i -E 's#^(java -jar /opt/tak/utils/UserManager.jar certmod -A .*)$#until \1; do echo "[aegis] server not ready for admin registration; retry in 30s"; sleep 30; done#' "$ENT"
+
+# (3) CoreConfig precedence fix — the TAK JVMs load /opt/tak/CoreConfig.xml
+#     (their CWD) but the image ships that file with host `tak-database` and
+#     EMPTY password, while coreConfigEnvHelper only fixes data/CoreConfig.xml.
+#     Copy the env-corrected file over the JVM-loaded path right after the
+#     helper. Without this the API HikariPool can't auth → mTLS requests hang.
+if ! grep -qF 'cp "$CONFIG" "$TR/CoreConfig.xml"' "$ENT"; then
+  sed -i '/coreConfigEnvHelper.py/a cp "$CONFIG" "$TR/CoreConfig.xml"' "$ENT"
+fi
+
+log "entrypoint patched (logs idempotency, certmod retry, CoreConfig precedence)"
+
 # --- docker build (single self-contained image) ----------------------------
 log "docker build → $IMAGE_REF:$VERSION (+ :latest)"
 docker build \
