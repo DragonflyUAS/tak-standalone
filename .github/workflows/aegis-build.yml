@@ -19,6 +19,27 @@ on:
       - 'AEGIS/**'
       - 'src/**'
       - '.github/workflows/aegis-build.yml'
+  # Without this, a PR gets no build at all and the first time anything is
+  # compiled is AFTER merge — which is exactly how AEGIS went red in Sept 2026
+  # (a dependency drift in src/takserver-tool-ui, invisible until merge).
+  #
+  # NOTE on fork PRs: `pull_request` from a fork does not receive `id-token`,
+  # so the WIF auth step would fail. This repo takes PRs from its own branches,
+  # so that is not handled here; if forks ever matter, split the push step out
+  # behind a check on github.event.pull_request.head.repo.fork.
+  pull_request:
+    branches: [AEGIS]
+    paths:
+      - 'AEGIS/**'
+      - 'src/**'
+      - '.github/workflows/aegis-build.yml'
+
+# Each build is ~8 min on an amd64 runner. Now that every PR push triggers one,
+# supersede in-progress PR builds — but NEVER cancel a build on AEGIS itself,
+# because that one publishes the shared tags.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   GAR_LOCATION: asia-east1-docker.pkg.dev
@@ -65,15 +86,50 @@ jobs:
           chmod +x AEGIS/scripts/build.sh
           AEGIS/scripts/build.sh
 
+      # ── Which tags a build is allowed to move ────────────────────────────
+      #
+      # `<version>` (e.g. 5.7-RELEASE-14) and `latest` are SHARED, MUTABLE
+      # pointers — every consumer pulls them. Only a build of AEGIS itself may
+      # move them. Any other ref (a PR, or a dispatch on a feature branch)
+      # publishes ONLY the immutable build tag, so a reviewer can pull and test
+      # the exact image a PR produces without that PR being able to change what
+      # production pulls.
+      #
+      # On a pull_request, GITHUB_SHA is the MERGE commit — which is the right
+      # identity here, because the merge result is what was actually built.
       - name: Push to GAR
         env:
           IMAGE: ${{ env.GAR_LOCATION }}/${{ env.GCP_PROJECT_ID }}/${{ env.GAR_REPOSITORY }}/${{ env.IMAGE_NAME }}
+          IS_RELEASE: ${{ github.ref == 'refs/heads/AEGIS' }}
         run: |
           set -euo pipefail
           VERSION="$(tr -d '[:space:]' < AEGIS/VERSION)"
           BUILD_TAG="${VERSION}-$(date -u +%Y%m%d%H%M%S)-${GITHUB_SHA::7}"
           docker tag "$IMAGE:$VERSION" "$IMAGE:$BUILD_TAG"
-          docker push "$IMAGE:$VERSION"
           docker push "$IMAGE:$BUILD_TAG"
-          docker push "$IMAGE:latest"
-          echo "Pushed $IMAGE tags: $VERSION , $BUILD_TAG , latest"
+
+          if [ "$IS_RELEASE" = true ]; then
+            docker push "$IMAGE:$VERSION"
+            docker push "$IMAGE:latest"
+            echo "Pushed (release): $BUILD_TAG , $VERSION , latest"
+          else
+            echo "Pushed (non-release ref $GITHUB_REF): $BUILD_TAG only"
+            echo "  $VERSION and latest were NOT moved."
+          fi
+
+          # Put the pullable ref in the run summary — a build tag buried in the
+          # log is a build tag nobody tests.
+          FENCE='~~~'   # markdown fence; ~ avoids backticks in shell entirely
+          {
+            echo "### TAK image"
+            echo
+            echo "$FENCE"
+            echo "$IMAGE:$BUILD_TAG"
+            echo "$FENCE"
+            echo
+            if [ "$IS_RELEASE" = true ]; then
+              echo "$VERSION and latest were moved to this build."
+            else
+              echo "Build tag only. $VERSION and latest were left alone."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
