@@ -115,7 +115,7 @@ log "payload version.txt: $PKG_VER"
 # script is idempotent and reviewable. Re-validate these on each TAK upstream
 # version bump (Phase 6 upstream-sync).
 ENT="$PKG_DIR/tak/docker_entrypoint.sh"
-log "patching $ENT (3 fixes)"
+log "patching $ENT (4 fixes)"
 
 # (1) logs symlink idempotency — the image ships /opt/tak/logs as a real dir,
 #     so `ln -s .../data/logs /opt/tak/logs` nests as /opt/tak/logs/logs and
@@ -141,7 +141,41 @@ if ! grep -qF 'cp "$CONFIG" "$TR/CoreConfig.xml"' "$ENT"; then
   sed -i '/coreConfigEnvHelper.py/a cp "$CONFIG" "$TR/CoreConfig.xml"' "$ENT"
 fi
 
-log "entrypoint patched (logs idempotency, certmod retry, CoreConfig precedence)"
+# (4) client truststore anchor — makeRootCa.sh builds truststore-root.jks from
+#     ca.pem *before* the intermediate CA exists, so it holds root only; the
+#     later `yes | makeCert.sh ca intermediate` overwrites ca.pem with the
+#     intermediate chain but never revisits the truststore. CoreConfig signs
+#     device certs with the intermediate, so verifying a leaf needs the path
+#     leaf -> intermediate -> root — which the server cannot build unless the
+#     client volunteers the intermediate. Our Go client does; real hardware
+#     does not (Skydio X10 sends leaf only), so the 8089 handshake dies with
+#     "peer not verified", the controller shows UNREACHABLE, and TAK logs
+#     nothing. Import the intermediate once all certs exist.
+#     NOT a trust widening: with root as the anchor "leaf + intermediate"
+#     already verified — only the burden of supplying the middle link moves.
+#     Anchored on chmod, the one unique line after all four cert blocks.
+#     See AEG-467 and AEGIS/adr/adr-001-client-truststore-anchor.md.
+if ! grep -qF 'aegis: anchor the client truststore' "$ENT"; then
+  sed -i '/^chmod -R 777 /i\
+# aegis: anchor the client truststore on the intermediate as well as the root.\
+AEGIS_TS="${CR}/files/truststore-root.jks"\
+if keytool -list -alias intermediate -keystore "${AEGIS_TS}" -storepass "${CA_PASS}" >/dev/null 2>&1; then\
+\  echo "[aegis] client truststore already anchors the intermediate CA"\
+else\
+\  echo "[aegis] importing intermediate CA into client truststore"\
+\  keytool -importcert -noprompt -alias intermediate -file "${CR}/files/intermediate.pem" -keystore "${AEGIS_TS}" -storepass "${CA_PASS}"\
+fi\
+' "$ENT"
+fi
+# Fail the build if (4) did not land. A `sed` whose address never matches exits
+# 0, so upstream renaming/removing the chmod line would silently ship an image
+# with the original defect — and that defect is invisible until real hardware
+# fails to connect in the field. (Patches 1-3 carry the same exposure and no
+# assertion yet; worth adding when one of them next drifts.)
+grep -qF 'aegis: anchor the client truststore' "$ENT" \
+  || die "patch (4) did not apply: the 'chmod -R 777' anchor is gone from docker_entrypoint.sh (upstream drift). See AEGIS/adr/adr-001-client-truststore-anchor.md."
+
+log "entrypoint patched (logs idempotency, certmod retry, CoreConfig precedence, truststore anchor)"
 
 # --- docker build (single self-contained image) ----------------------------
 log "docker build → $IMAGE_REF:$VERSION (+ :latest)"
